@@ -62,11 +62,11 @@ PRO cloud_mask_pt1_04
   
   ;INPUTS
   ;set the thresholds for each band
-  min_b1 = 0.03      ; Default=0.05(0.04-0.06) The lower, the higher the chance of picking non-cloudy areas. 
+  min_b1 = 0.03      ; Default=0.05(0.03-0.06) The lower, the higher the chance of picking non-cloudy areas. 
                      ; The larger, the more clouds uncovered
-  max_b4 = 0.22      ; Default=0.18(0.16-0.20) The larger, the higher the chance of picking non-shadow areas. 
+  max_b4 = 0.22      ; Default=0.18(0.16-0.22) The larger, the higher the chance of picking non-shadow areas. 
                      ; The lower, the more shadows uncovered
-  max_b6 = 2107      ; Default=2300 (2200-2500) The larger, the higher the chance of picking urban or impervious areas. 
+  max_b6 = 2107      ; Default=2300 (2100-2500) The larger, the higher the chance of picking urban or impervious areas. 
                      ; The lower, the higher the chances of excluding clouds.
   max_b6_shd = 2300  ; Default=2400. (2200-2500) The larger, the more areas that are not cloud shadows that are picked up.
   ;pick, open, and read files
