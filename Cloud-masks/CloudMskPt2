@@ -1,0 +1,196 @@
+
+; PURPOSE:
+; It applies the method proposed by Martinuzzi and Ramos 2007. Part 2 creates a buffer around the cloud mask to cover any edge pixels. IT also 
+; creates a mask with a bigger buffer and shifts it to the shadow area based on the average distance (in pixels) from the cloud and the respective shadow.
+; This value is entered by the user. It then overlaps the shadow and shifted masks to create a permanent shade mask. This step covers any remaining
+; pixels in the shadow pre mask. The buffer for the shifting image is about 3 times the one used to buffer the cloud mask to 
+; account for disstortions of the shade compared to the cloud.
+; Jan 29-2012: in version 03 I buffer the cloud shadow and shift it back to areas. 
+; pre classified as clouds to exclude some areas missclassified as clouds I HAVE TO TEST IT MORE!!!
+; Jan 26-2012: in version 01 I incorporate a sieve routine to reduce speckle
+; Jan 26-2012: in version 02 I improve efficiency by avoiding some loops
+;
+; POTENTIAL IMPROVEMENTS
+; 1. Part 1 and part 2 can and should be merged to reduce interaction.
+; 2. The x and y shift can and should be set autmoatically to reduce interaction.
+
+PRO cloud_mask_pt2_03
+    compile_opt idl2
+    
+    ;INPUTS
+    ;specify the average distance from the centroid of clouds to the centroid of shadows
+    ;positive is east-south
+    x_shft= -17
+    y_shft= 10 
+    
+   ;specify the number of pixels to create a buffer around the masks from previous step
+    sieve_pix = 5 ; This is the number of pixels that will be eliminated from the final file applying the
+                 ; sieve routine
+    cloud_thresh = 3 ;Deault: 3
+    cloud_shft_thresh = 10 ;Default: 10 (7-10)
+    shadow_thresh= 3 ;Default: 3
+    shift_shadow = 'yes'  ; if turned yes, the buffered pre-cloud shadow will be overlayed with the shifted
+                         ; This option works fine with cumulus-type clouds
+    shadow_shft_thresh= 5 ;Default:7 (4-7). This is necessary only if shift_shadow is set equal to 'yes'
+   
+    ;
+    ;pick, open, and read files: This is annoying. I need to reopen the outputs of the previous
+    ;step to read the fid. There should be a way to avoid this.
+    precloud_msk = envi_pickfile(title='Open pre_cloud_mask...')
+    envi_open_file, precloud_msk, r_fid=b16_fid, /no_realize
+    envi_file_query, b16_fid, ns=nsb, nl=nlb, nb=nbb, data_type=dtb, interleave=interb, $
+    fname=fnameb, sname=snameb, bnames=bnamesb, file_type=ftb, dims=dimsb, num_classes=num_classes_cl
+    print, '"Pre_cloud_mask" has', nsb, ' samples,', nlb, ' lines, and', nbb, ' bands'
+    
+    preshadow_msk = envi_pickfile(title='Open pre_shadow_mask...')
+    envi_open_file, preshadow_msk, r_fid=b4_fid, /no_realize
+    envi_file_query, b4_fid, ns=ns4, nl=nl4, nb=nb4, data_type=dt4, interleave=inter4, $
+    fname=fname4, sname=sname4, bnames=bnames4, file_type=ft4, dims=dims4, num_classes=num_classes_sh
+    print, '"Pre_shadow_mask" has', ns4, ' samples,', nl4, ' lines, and', nb4, ' bands'
+   
+   ;check if the dimensions are the same, if not, abort the program
+    if nsb ne ns4 or nlb ne nl4 or nbb gt 1 or nbb ne nb4 then begin
+        print, 'dimensions do not match, aborting program'
+        retall 
+    endif
+    
+    ;select output directory and change to it
+    outputdir = dialog_pickfile(title='Select OUTPUT Directory', /directory)
+    IF outputdir EQ '' THEN return
+    str = 'Output directory: ' + outputdir
+    cd, outputdir
+    
+    ; This is to sieve speckle before buffering the images
+    ; First I enter the parameters for the sieve routine.
+    order_cld_siev = bindgen(num_classes_cl)
+    order_shd_siev = bindgen(num_classes_sh)
+   
+    ;for cloud msk
+    envi_doit, 'class_cs_doit', fid=b16_fid, pos=0, dims=dimsb, order=order_cld_sieve, $  
+    method=1, /eight, sieve_min=sieve_pix, out_name='cloud_sieve', r_fid= cld_siev_fid, /in_memory
+    
+    ;for shadow msk
+    envi_doit, 'class_cs_doit', fid=b4_fid, pos=0, dims=dims4, order=order_shd_sieve, $  
+    method=1, /eight, sieve_min=sieve_pix, out_name='shade_sieve', r_fid= shd_siev_fid, /in_memory
+    
+    ;This is to remove pre-cloud and pre-shadow masks
+    envi_file_mng, id=b16_fid, /remove
+    envi_file_mng, id=b4_fid, /remove
+    
+    ;This is to create a buffer image around the cloud and shadow masks
+    envi_doit, 'envi_buffer_zone_doit', fid=cld_siev_fid, pos=0,dims=dimsb, $
+    max_distance=20, class_ptr=[1], distance_dt= 1, r_fid=cloud_fid, /in_memory
+    
+    envi_doit, 'envi_buffer_zone_doit', fid=shd_siev_fid, pos=0,dims=dims4, $
+    max_distance=10, class_ptr=[1], distance_dt= 1, r_fid=shadow_fid, /in_memory
+    
+    ;This is to close temporary cloud and shadow mask files from memory
+    envi_file_mng, id=cld_siev_fid, /remove, /delete
+    envi_file_mng, id=shd_siev_fid, /remove, /delete
+    
+    cloud_buff = envi_get_data(fid=cloud_fid, dims=dimsb,pos=0)
+    cloud_to_shft = cloud_buff
+    shadow_buff = envi_get_data(fid=shadow_fid, dims=dims4,pos=0)
+    
+    
+    ;This is to close temporary cloud and shadow buffer files from memory
+    envi_file_mng, id=cloud_fid, /remove, /delete
+    envi_file_mng, id=shadow_fid, /remove, /delete
+    
+    ; This are the arrays that hold the information
+    cloud_buff_msk= bytarr(nsb,nlb)
+    cloud_to_shft_msk= bytarr(nsb,nlb)
+    shadow_buff_msk= bytarr(nsb,nlb)
+    shadow_to_shft_msk= bytarr(nsb,nlb)
+    
+    ;creates 3 buffered masks based on the inputs entered at the begginig
+    ; 2 for clouds and 1 for cloud shadows
+    
+    print, 'masking the buffer zones'
+    cloud_buff_msk[where(cloud_buff le cloud_thresh)]=1
+    cloud_to_shft_msk[where(cloud_to_shft le cloud_shft_thresh)]=1
+    shadow_buff_msk[where(shadow_buff le shadow_thresh)]=1
+    
+    ;save memory    
+    cloud_buff = 0
+    cloud_to_shft = 0
+    shadow_buff = 0
+    
+    cloud_shifted=cloud_to_shft_msk
+    shadow_shifted=shadow_to_shft_msk
+    
+    ;this is for shifting the cloud mask to the position for i = 0 to ns-1   
+    ; here I change the sign because idl seems to index from south east to north west. The oposite to
+    ;envi
+    print, 'shifting the position of the larger cloud mask'
+    for i = 0, nsb-1 do begin
+         for j =0, nlb-1 do begin
+             
+             if (i - x_shft) lt 0 or (j - y_shft) lt 0 or (i - x_shft) gt nsb-1 or (j - y_shft) gt nlb-1 $
+             then cloud_shifted [i,j]=0 $
+             else cloud_shifted[i,j]=cloud_to_shft_msk[i - x_shft, j - y_shft]
+         endfor
+    endfor 
+    
+   ;multiply the shifted mask with the shadow mask    
+   shadow_msk = cloud_shifted * shadow_buff_msk
+   cloud_shifted=0
+
+   ;This is to shift the shadow mask to where the clouds are
+   ; It will work if this option is selected at the beggining
+   if shift_shadow eq 'yes' then begin
+    
+       ;This is to save the shadow mask to memory temporarily
+       temp = shadow_msk
+       envi_enter_data, temp, map_info=map_info, r_fid=shd_fid
+       
+       ;This is to create a buffer zone around the definite shadow mask
+       envi_doit, 'envi_buffer_zone_doit', fid=shd_fid, pos=0,dims=dims4, $
+       max_distance=20, class_ptr=[1], distance_dt= 1, r_fid=shd_buf_fid, /in_memory
+       
+       shadow_to_shft_buff = envi_get_data(fid=shd_buf_fid, dims=dims4,pos=0)
+       shadow_to_shft_msk[where(shadow_to_shft_buff le shadow_shft_thresh)]=1
+       
+       envi_file_mng, id=shd_fid, /remove, /delete
+       envi_file_mng, id=shd_buf_fid, /remove, /delete
+      
+       print, 'shifting the position of the larger shadow mask'
+       
+       for i = 0, nsb-1 do begin
+             for j =0, nlb-1 do begin              
+                 if (i + x_shft) lt 0 or (j + y_shft) lt 0 or (i + x_shft) gt nsb-1 or (j + y_shft) gt nlb-1 $
+                 then shadow_shifted [i,j]=0 $
+                 else shadow_shifted[i,j]=shadow_to_shft_msk[i + x_shft, j+ y_shft]   
+             endfor
+        endfor 
+   
+       ;This is to create a definite cloud mask
+        cloud_mask = shadow_shifted * cloud_buff_msk
+    endif else begin
+        cloud_mask = cloud_buff_msk
+    endelse
+   
+   ;create a unified mask
+   cloud_shadow_msk = byte(shadow_msk + cloud_mask)
+   shadow_shifted=0
+   shadow_msk=0
+   cloud_mask=0
+    
+   ;This is to reclassify the mask so clouds and shadows = 0s and the rest 1s
+   print, 'creating cloud mask'    
+   cloud_shadow_mskd= bytarr(nsb,nlb)
+   cloud_shadow_mskd[where(cloud_shadow_msk eq 0)] =1
+   cloud_shadow_msk = 0
+    
+   ;save the file
+   fname = 'cloud_msk.nvi'
+   openw, lun, fname, /get_lun
+   writeu, lun, cloud_shadow_mskd
+   free_lun, lun
+     
+   map_info=envi_get_map_info(fid=b16_fid)   
+   envi_setup_head, fname=fname, data_type=1, interleave=interb, map_info=map_info, $
+   ns=nsb,nl=nlb, nb=1, offset=0, /open, /write, r_fid=cm_fid
+   
+   print, 'game over'
+end
