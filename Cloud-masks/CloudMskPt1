@@ -8,6 +8,7 @@
 ;
 ; PURPOSE:
 ;	
+;	;
 ;
 ; CALLING SEQUENCE:
 ;	Just compile and run
@@ -43,23 +44,31 @@
 ;
 ; MODIFICATION HISTORY:
 ; 	Written by:	Victor Gutierrez (vhg2103@columbia.edu). Nov 2010.
+;	  jan-26-2012: in version 04 I include band 6 to do the cloud shadow mask and also improve efficiency by avoiding loops
+;	  Jan 26-2012: in version 03 I specify the number of classes in the output file.
 ;	  Nov, 22, 2010. cloud_mask_pt1_01.pro defines the outputs as classification files. I guess this can allow
-;	  to merge part 1 and part 2 together eventually.
+;	  to merge part 1 and part 2 together.
+;	  Nov 23, 2010. cloud_mask_pt1_01.pro has a change in the format of the output so now is byte instead of
+;	  floating.
 ;	  
 ;	POTENTIAL IMPROVEMENTS
-;	1. The two parts can and should eventually be merged.
-;	2. The optimal thresholds for any case should be set or found automatically to reduce interaction
+; 1. The two parts can and should eventually be merged.
+; 2. The optimal thresholds for any case should be set or found automatically to reduce interaction
+;-
 ;-
 
-PRO cloud_mask_pt1_01
+PRO cloud_mask_pt1_04
   compile_opt idl2
   
   ;INPUTS
   ;set the thresholds for each band
-  min_b1 = 0.04 ;The lower, the higher the chance of picking non-cloudy areas. The larger, the more clouds uncovered
-  max_b4 = 0.20 ;The larger, the higher the chance of picking non-shadow areas. The lower, the more shaodws uncovered
-  max_b6 = 289.5  ;The larger, the higher the chance of picking urban or impervious areas. The lower, the higher the chances of excluding clouds.
-  
+  min_b1 = 0.03      ; Default=0.05(0.04-0.06) The lower, the higher the chance of picking non-cloudy areas. 
+                     ; The larger, the more clouds uncovered
+  max_b4 = 0.22      ; Default=0.18(0.16-0.20) The larger, the higher the chance of picking non-shadow areas. 
+                     ; The lower, the more shadows uncovered
+  max_b6 = 2107      ; Default=2300 (2200-2500) The larger, the higher the chance of picking urban or impervious areas. 
+                     ; The lower, the higher the chances of excluding clouds.
+  max_b6_shd = 2300  ; Default=2400. (2200-2500) The larger, the more areas that are not cloud shadows that are picked up.
   ;pick, open, and read files
   b146 = envi_pickfile(title='Open stack with bands 1,4,6...')
   envi_open_file, b146, r_fid=b146_fid, /no_realize
@@ -68,36 +77,44 @@ PRO cloud_mask_pt1_01
   print, '"b146" file has', nsb, ' samples,', nlb, ' lines, and', nbb, ' bands'
   
   
-  ;Select output directory and change to it
-  outputdir = dialog_pickfile(title='Select OUTPUT Directory', /directory)
-  IF outputdir EQ '' THEN return
-  ;str = 'Output directory: ' + outputdir
-  cd, outputdir
+   ;Select output directory and change to it
+   outputdir = dialog_pickfile(title='Select OUTPUT Directory', /directory)
+   IF outputdir EQ '' THEN return
+   ;str = 'Output directory: ' + outputdir
+   cd, outputdir
   
   ;get the data from the input bands 
-  b1 = envi_get_data(fid=b146_fid, dims=dimsb,pos=0)
-  b4 = envi_get_data(fid=b146_fid, dims=dimsb,pos=1)
-  b6 = envi_get_data(fid=b146_fid, dims=dimsb,pos=2)
+   b1 = envi_get_data(fid=b146_fid, dims=dimsb,pos=0)
+   b4 = envi_get_data(fid=b146_fid, dims=dimsb,pos=1)
+   b6 = envi_get_data(fid=b146_fid, dims=dimsb,pos=2)
   
-  b4_mks=bytarr(nsb,nlb)
+   ; This are the arrays that hold the mask info
+   b1_msk=bytarr(nsb,nlb)
+   b4_msk=bytarr(nsb,nlb)
+   b6_msk=bytarr(nsb,nlb)
+   b6_msk_shd=bytarr(nsb,nlb)
   
-  ;This is to create masks based on the thresholds defined above for each band
-  for i = 0, nsb-1 do begin
-          for j = 0, nlb-1 do begin
-              if b1[i,j] gt min_b1 then b1[i,j]=1 $
-              else b1[i,j]=0
-              if b4[i,j] lt max_b4 then b4[i,j]=1 $
-              else b4[i,j]=0          
-              if b6[i,j] lt max_b6 then b6[i,j]=1 $
-              else b6[i,j]=0  
-          endfor
-  endfor
+   ;This is to create masks based on the thresholds defined above for each band
+   b1_msk[where(b1 gt min_b1)]=1
+   b4_msk[where(b4 lt max_b4)]=1
+   b6_msk[where(b6 lt max_b6)]=1
+   b6_msk_shd[where(b6 lt max_b6_shd)]=1
   
-  ;this creates a preliminary cloud mask that needs to be buffered in part 2
-  b16_msk= byte(b1*b6)
+   ;this creates a preliminary cloud mask that needs to be buffered in part 2
+   b16_msk= byte(b1_msk*b6_msk)
+   b1_msk=0
+   b6_msk=0
   
-  ;I JUST HAVE TO SAVE the preliminary masks to an envi file and done.
+   ;this is for the preliminary cloud shadow mask
+   b46_msk= byte(b4_msk*b6_msk_shd)
+   ;Now I will save the image
+   b4_msk=0
+   b6_msk_shd=0
+   b1=0
+   b4=0
+   b6=0
   
+  ; These are the parameters to save the file.
    fname = 'pre_cloud_msk.nvi'
    openw, lun, fname, /get_lun
    writeu, lun, b16_msk
@@ -105,20 +122,24 @@ PRO cloud_mask_pt1_01
    
    fname1 = 'pre_shadow_msk.nvi'
    openw, lun, fname1, /get_lun
-   writeu, lun, b4
+   writeu, lun, b46_msk
    free_lun, lun
    
    map_info=envi_get_map_info(fid=b146_fid)
    
    ;The head is setup to be a classification type
    ftype = envi_file_type('classification')
-   
+   class_names= ['Masked', 'Unmasked']
+   lookup = [[0,0,0],[255,0,0]]
    
    envi_setup_head, fname=fname, data_type=1, interleave=inter, map_info=map_info, $
-   ns=nsb,nl=nlb, nb=1, offset=0, /open, /write, r_fid=b16_fid, file_type=ftype
+   ns=nsb,nl=nlb, nb=1, offset=0, /open, /write, r_fid=b16_fid, file_type=ftype, num_classes=2, $
+   class_names=class_names, lookup=lookup
+ 
   
    envi_setup_head, fname=fname1, data_type=1, interleave=inter, map_info=map_info, $
-   ns=nsb,nl=nlb, nb=1, offset=0, /open, /write, r_fid=b4_fid, file_type=ftype
+   ns=nsb,nl=nlb, nb=1, offset=0, /open, /write, r_fid=b4_fid, file_type=ftype, num_classes=2, $
+   class_names=class_names, lookup=lookup
   
   print, 'Check the results. if they are satisfactory, go to cloud_msk_pt2, else change the thresholds and run again.'
   
